@@ -39,16 +39,16 @@ app.add_middleware(
 # --- REGISTER THE RESUME ROUTER ---
 app.include_router(resume_router)
 
-# --- EMAIL CONFIGURATION (FIXED FOR RENDER) ---
-# This uses Port 465 (SSL) to bypass the block on Port 587
+# --- EMAIL CONFIGURATION (UPDATED FOR BREVO) ---
+# This uses Port 587 which works with Brevo/Sendinblue
 conf = ConnectionConfig(
     MAIL_USERNAME=os.getenv("MAIL_USERNAME"), # Reads from Render Environment
     MAIL_PASSWORD=os.getenv("MAIL_PASSWORD"), # Reads from Render Environment
     MAIL_FROM=os.getenv("MAIL_FROM"),         # Reads from Render Environment
-    MAIL_PORT=465,                            # <--- CHANGED TO 465 (SSL)
-    MAIL_SERVER="smtp.gmail.com",
-    MAIL_STARTTLS=False,                      # <--- FALSE for Port 465
-    MAIL_SSL_TLS=True,                        # <--- TRUE for Port 465
+    MAIL_PORT=587,                            # <--- BREVO USES 587
+    MAIL_SERVER="smtp-relay.brevo.com",       # <--- BREVO SERVER
+    MAIL_STARTTLS=True,                       # <--- TRUE for Brevo
+    MAIL_SSL_TLS=False,                       # <--- FALSE for Brevo
     USE_CREDENTIALS=True,
     VALIDATE_CERTS=True
 )

@@ -1,4 +1,3 @@
-# resume_routes.py
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from pydantic import BaseModel
 from openai import OpenAI
@@ -15,10 +14,9 @@ load_dotenv()
 # 🔒 SECURITY FIX: Get key from Environment Variable
 API_KEY = os.getenv("SAMBANOVA_API_KEY")
 
+# 🛑 SAFETY CHECK: If no key is found, stop immediately.
 if not API_KEY:
-    # Fallback for local testing if .env is missing (Optional, but useful)
-    # BUT REMOVE THIS STRING BEFORE COMMITTING TO GITHUB
-    API_KEY = "bc6e55da-22af-438c-ae2c-beb5587e7e43" 
+    raise ValueError("CRITICAL ERROR: SAMBANOVA_API_KEY is missing. Please add it to your .env file or Render Environment Variables.")
 
 BASE_URL = "https://api.sambanova.ai/v1"
 MODEL_NAME = "Meta-Llama-3.1-8B-Instruct" 

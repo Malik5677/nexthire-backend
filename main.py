@@ -1,4 +1,5 @@
 import sqlite3
+import os  # <--- REQUIRED to read Render secrets
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
@@ -24,9 +25,8 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 3000
 origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
-    "https://nexthire-app.netlify.app"   # <--- ADD THIS LINE
+    "https://nexthire-app.netlify.app"  # Your Netlify URL
 ]
-
 
 app.add_middleware(
     CORSMiddleware,
@@ -37,23 +37,21 @@ app.add_middleware(
 )
 
 # --- REGISTER THE RESUME ROUTER ---
-# This connects your /analyze-resume endpoint to the main app
 app.include_router(resume_router)
 
-
-# --- EMAIL CONFIGURATION ---
+# --- EMAIL CONFIGURATION (FIXED FOR RENDER) ---
+# This uses Port 465 (SSL) to bypass the block on Port 587
 conf = ConnectionConfig(
-    MAIL_USERNAME="jatinmalik34568@gmail.com", 
-    MAIL_PASSWORD="dpdlmflzhhthlati", 
-    MAIL_FROM="jatinmalik34568@gmail.com", 
-    MAIL_PORT=465,
+    MAIL_USERNAME=os.getenv("MAIL_USERNAME"), # Reads from Render Environment
+    MAIL_PASSWORD=os.getenv("MAIL_PASSWORD"), # Reads from Render Environment
+    MAIL_FROM=os.getenv("MAIL_FROM"),         # Reads from Render Environment
+    MAIL_PORT=465,                            # <--- CHANGED TO 465 (SSL)
     MAIL_SERVER="smtp.gmail.com",
-    MAIL_STARTTLS=True,
-    MAIL_SSL_TLS=False,
+    MAIL_STARTTLS=False,                      # <--- FALSE for Port 465
+    MAIL_SSL_TLS=True,                        # <--- TRUE for Port 465
     USE_CREDENTIALS=True,
     VALIDATE_CERTS=True
 )
-
 
 # --- DATABASE ---
 DB_NAME = "users.db"
@@ -95,7 +93,6 @@ def init_db():
 
 init_db()
 
-
 # --- MODELS ---
 class UserUpdate(BaseModel):
     original_email: str 
@@ -121,7 +118,6 @@ class UserLogin(BaseModel):
     login_identifier: str 
     password: str
 
-
 # --- HELPERS ---
 def get_password_hash(password: str) -> str:
     pwd_bytes = password.encode('utf-8')
@@ -139,7 +135,6 @@ def create_access_token(data: dict):
     expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-
 
 # --- API ENDPOINTS ---
 
@@ -166,8 +161,8 @@ async def send_otp(payload: ForgotPasswordRequest):
         return {"message": "OTP sent successfully"}
     except Exception as e:
         print(f"Mail Error: {e}")
+        # Raise 500 so frontend knows it failed
         raise HTTPException(status_code=500, detail="Failed to send email")
-
 
 @app.post("/verify-signup")
 def verify_signup(data: OTPVerify):
@@ -201,7 +196,6 @@ def verify_signup(data: OTPVerify):
         except sqlite3.IntegrityError:
             raise HTTPException(status_code=400, detail="Email or Username already taken")
 
-
 @app.post("/login")
 def login(user: UserLogin):
     with sqlite3.connect(DB_NAME) as conn:
@@ -232,7 +226,6 @@ def login(user: UserLogin):
             "phone": phone or ""
         }
 
-
 @app.post("/update-profile")
 def update_profile(data: UserUpdate):
     with sqlite3.connect(DB_NAME) as conn:
@@ -262,7 +255,6 @@ def update_profile(data: UserUpdate):
             return {"message": "Profile updated successfully"}
         except sqlite3.IntegrityError:
              raise HTTPException(status_code=400, detail="Constraint error")
-
 
 @app.post("/reset-password")
 def reset_password(data: ResetPasswordVerify):

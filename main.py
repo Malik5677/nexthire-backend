@@ -24,7 +24,9 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 3000
 origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
+    "https://nexthire-app.netlify.app"   # <--- ADD THIS LINE
 ]
+
 
 app.add_middleware(
     CORSMiddleware,

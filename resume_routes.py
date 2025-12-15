@@ -1,99 +1,192 @@
+# =====================================================
+# resume_routes.py — AI RESUME ANALYZER (FIXED + SAFE)
+# =====================================================
+
+import os, json, sqlite3
+from datetime import datetime
 from fastapi import APIRouter, UploadFile, File, HTTPException
-from pydantic import BaseModel
-from openai import OpenAI
-from pypdf import PdfReader
-import io
-import json
-import os
 from dotenv import load_dotenv
+from pypdf import PdfReader
+from openai import OpenAI
+import re
 
-# Load environment variables from .env file
 load_dotenv()
+router = APIRouter(prefix="/resume", tags=["Resume Analyzer"])
+DB_NAME = "users.db"
 
-# --- CONFIGURATION ---
-# 🔒 SECURITY FIX: Get key from Environment Variable
-API_KEY = os.getenv("SAMBANOVA_API_KEY")
+# -----------------------------------------------------
+# AI CONFIG (SAMBANOVA)
+# -----------------------------------------------------
+AI_API_KEY = os.getenv("SAMBANOVA_API_KEY")
 
-# 🛑 SAFETY CHECK: If no key is found, stop immediately.
-if not API_KEY:
-    raise ValueError("CRITICAL ERROR: SAMBANOVA_API_KEY is missing. Please add it to your .env file or Render Environment Variables.")
+client = None
+if AI_API_KEY:
+    client = OpenAI(
+        api_key=AI_API_KEY,
+        base_url="https://api.sambanova.ai/v1"
+    )
 
-BASE_URL = "https://api.sambanova.ai/v1"
-MODEL_NAME = "Meta-Llama-3.1-8B-Instruct" 
+# -----------------------------------------------------
+# DB INIT
+# -----------------------------------------------------
+def init_resume_db():
+    conn = sqlite3.connect(DB_NAME)
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS resume_analysis (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT,
+            ats_score INTEGER,
+            breakdown TEXT,
+            reasons TEXT,
+            analysis TEXT,
+            created_at TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
 
-# Initialize the Router
-router = APIRouter()
+init_resume_db()
 
-# Initialize AI Client with Timeout
-client = OpenAI(api_key=API_KEY, base_url=BASE_URL, timeout=120.0)
-
-# --- MODELS ---
-class AnalysisResponse(BaseModel):
-    score: int
-    summary: str
-    strengths: list[str]
-    weaknesses: list[str]
-    tips: list[str]
-    missing_keywords: list[str]
-
-# --- HELPER FUNCTION ---
-def extract_text_from_pdf(file_bytes):
+# -----------------------------------------------------
+# PDF TEXT EXTRACTION
+# -----------------------------------------------------
+def extract_text_from_pdf(file: UploadFile) -> str:
     try:
-        reader = PdfReader(io.BytesIO(file_bytes))
+        file.file.seek(0)
+        reader = PdfReader(file.file)
         text = ""
         for page in reader.pages:
             text += page.extract_text() or ""
-        return text
+        return text.strip()
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid PDF file")
+        raise HTTPException(400, "PDF must be text-based (not scanned)")
 
-# --- API ENDPOINT ---
-@router.post("/analyze-resume", response_model=AnalysisResponse)
-async def analyze_resume(file: UploadFile = File(...)):
-    # 1. Validate File
-    if file.content_type not in ["application/pdf", "application/x-pdf"]:
-        raise HTTPException(status_code=400, detail="Only PDF files are supported")
-    
-    # 2. Read Content
-    content = await file.read()
-    resume_text = extract_text_from_pdf(content)
+# -----------------------------------------------------
+# PROMPT
+# -----------------------------------------------------
+def build_prompt(resume_text: str) -> str:
+    return f"""
+Return ONLY valid JSON. No markdown. No explanation.
 
-    # 3. System Prompt
-    system_prompt = """
-    You are a Senior Technical Recruiter. Analyze the resume for a modern Full Stack Developer role.
-    
-    CRITICAL: Return ONLY a raw JSON object. Do not write markdown code blocks.
-    
-    JSON Structure:
-    {
-        "score": (integer 0-100 based on ATS best practices),
-        "summary": "A 2-sentence professional summary of the candidate.",
-        "strengths": ["strength1", "strength2", "strength3"],
-        "weaknesses": ["weakness1", "weakness2"],
-        "tips": ["specific actionable tip 1", "specific actionable tip 2"],
-        "missing_keywords": ["keyword1", "keyword2", "keyword3"] 
-    }
-    """
-    
-    # 4. Call AI (SambaNova)
+{{
+  "ats_score": number,
+  "strengths": [string],
+  "improvements": [string],
+  "missing_keywords": [string],
+  "suggested_bullets": [string],
+  "skill_breakdown": {{
+    "programming": number,
+    "frontend": number,
+    "backend": number,
+    "databases": number,
+    "cloud_devops": number,
+    "soft_skills": number
+  }},
+  "low_score_reasons": [string]
+}}
+
+RESUME:
+\"\"\"
+{resume_text[:6000]}
+\"\"\"
+"""
+
+# -----------------------------------------------------
+# SAFE JSON PARSER
+# -----------------------------------------------------
+def extract_json(text: str) -> dict:
+    try:
+        return json.loads(text)
+    except:
+        match = re.search(r"\{[\s\S]*\}", text)
+        if not match:
+            raise HTTPException(500, "AI did not return JSON")
+        return json.loads(match.group())
+
+# -----------------------------------------------------
+# ANALYZE RESUME
+# -----------------------------------------------------
+@router.post("/analyze")
+async def analyze_resume(
+    file: UploadFile = File(...),
+    email: str | None = None
+):
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(400, "Only PDF allowed")
+
+    resume_text = extract_text_from_pdf(file)
+    if len(resume_text) < 150:
+        raise HTTPException(400, "Resume text too short")
+
+    if not client:
+        raise HTTPException(503, "AI service not configured")
+
     try:
         response = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Analyze this resume:\n{resume_text[:6000]}"},
-            ],
-            temperature=0.1,
-            stream=False
+            model="Meta-Llama-3.1-8B-Instruct",
+            messages=[{"role": "user", "content": build_prompt(resume_text)}],
+            temperature=0.4,
+            max_tokens=900,
+            timeout=30
         )
-        
-        raw_content = response.choices[0].message.content
-        
-        # ✅ BUG FIX: Correctly remove Markdown code blocks
-        cleaned_json = raw_content.replace("``````", "").strip()
-        
-        return json.loads(cleaned_json)
 
+        raw = response.choices[0].message.content
+        analysis = extract_json(raw)
+        ats_score = int(analysis.get("ats_score", 0))
+
+        if email:
+            conn = sqlite3.connect(DB_NAME)
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO resume_analysis
+                (email, ats_score, breakdown, reasons, analysis, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                email,
+                ats_score,
+                json.dumps(analysis.get("skill_breakdown", {})),
+                json.dumps(analysis.get("low_score_reasons", [])),
+                json.dumps(analysis),
+                datetime.utcnow().isoformat()
+            ))
+            conn.commit()
+            conn.close()
+
+        return {
+            "success": True,
+            "analysis": {**analysis, "score": ats_score}
+        }
+
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"AI Error: {e}")
-        raise HTTPException(status_code=500, detail=f"AI Analysis failed: {str(e)}")
+        raise HTTPException(500, f"Resume analysis failed: {e}")
+
+# -----------------------------------------------------
+# HISTORY
+# -----------------------------------------------------
+@router.get("/history/{email}")
+def get_resume_history(email: str):
+    conn = sqlite3.connect(DB_NAME)
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT ats_score, breakdown, reasons, created_at
+        FROM resume_analysis
+        WHERE email=?
+        ORDER BY created_at DESC
+    """, (email,))
+    rows = cur.fetchall()
+    conn.close()
+
+    return {
+        "email": email,
+        "history": [
+            {
+                "ats_score": r[0],
+                "skill_breakdown": json.loads(r[1]),
+                "low_score_reasons": json.loads(r[2]),
+                "date": r[3]
+            } for r in rows
+        ]
+    }
